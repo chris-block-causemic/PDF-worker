@@ -1,0 +1,18 @@
+{
+  "name": "pdf-queue-worker",
+  "version": "1.0.0",
+  "description": "Railway worker for processing PDF generation queue",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.34.3",
+    "puppeteer": "^23.9.0",
+    "axios": "^1.7.9",
+    "form-data": "^4.0.1"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
