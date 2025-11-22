@@ -46,7 +46,7 @@ RUN npm install --only=production
 COPY worker.js ./
 
 # Run as non-root user for security
-RUN useradd -m -u 1000 worker && chown -R worker:worker /app
+RUN useradd -m -u 1001 worker && chown -R worker:worker /app
 USER worker
 
 # Start the worker
