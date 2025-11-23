@@ -130,14 +130,18 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
         await page.waitForSelector('input[name="password"]', { timeout: 5000 });
         await page.type('input[name="password"]', password);
 
-        // Find and click submit button
+        // Find submit button
         const submitButton = await page.$('button[type="submit"]');
         if (submitButton) {
-          await submitButton.click();
-          console.log(`[${new Date().toISOString()}] Password submitted, waiting for batch page to load...`);
+          console.log(`[${new Date().toISOString()}] Submitting password...`);
 
-          // Wait for navigation after password submission (longer timeout for large batches)
-          await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 120000 });
+          // Set up navigation listener BEFORE clicking (navigation might be fast)
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 120000 }),
+            submitButton.click()
+          ]);
+
+          console.log(`[${new Date().toISOString()}] Batch page loaded after password submission`);
         } else {
           console.warn(`[${new Date().toISOString()}] Submit button not found, trying network idle...`);
           await page.waitForNetworkIdle({ timeout: 10000 });
