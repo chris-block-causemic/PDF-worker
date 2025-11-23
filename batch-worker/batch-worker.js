@@ -84,7 +84,7 @@ async function getAssociatedReceipts(batchReceiptId, hubspotToken) {
  * Generate batch PDF for multiple receipts using persistent browser
  */
 async function generateBatchReceiptPdf(job, hubspotToken) {
-  const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol } = job;
+  const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol, password } = job;
 
   console.log(`[${new Date().toISOString()}] Starting batch PDF generation for batch ${batchReceiptId}`);
 
@@ -120,6 +120,22 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
       timeout: 120000 // 2 minute timeout for large batches
     });
     const navigationTime = Date.now() - navigationStart;
+
+    // Fill password if provided
+    if (password) {
+      try {
+        console.log(`[${new Date().toISOString()}] Password provided, filling password field...`);
+        await page.waitForSelector('input[name="password"]', { timeout: 5000 });
+        await page.type('input[name="password"]', password);
+
+        // Wait a moment for any form submission/page update
+        await page.waitForNetworkIdle({ timeout: 5000 });
+        console.log(`[${new Date().toISOString()}] Password filled successfully`);
+      } catch (passwordError) {
+        console.warn(`[${new Date().toISOString()}] Password field not found or error filling: ${passwordError.message}`);
+        // Continue anyway - page might not have password protection
+      }
+    }
 
     const pdfStart = Date.now();
     console.log(`[${new Date().toISOString()}] Generating batch PDF...`);

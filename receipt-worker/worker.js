@@ -34,7 +34,7 @@ const redis = new Redis({
  * Generate PDF for a single receipt using persistent browser
  */
 async function generateReceiptPdf(job, hubspotToken) {
-  const { receiptId, domain, pagePath, folderPath, folderId, protocol } = job;
+  const { receiptId, domain, pagePath, folderPath, folderId, protocol, password } = job;
 
   const receiptPageUrl = `${protocol}://${domain}${pagePath}?receiptId=${receiptId}`;
   console.log(`[${new Date().toISOString()}] Generating PDF for: ${receiptPageUrl}`);
@@ -51,6 +51,22 @@ async function generateReceiptPdf(job, hubspotToken) {
       timeout: 30000
     });
     const navigationTime = Date.now() - navigationStart;
+
+    // Fill password if provided
+    if (password) {
+      try {
+        console.log(`[${new Date().toISOString()}] Password provided, filling password field...`);
+        await page.waitForSelector('input[name="password"]', { timeout: 5000 });
+        await page.type('input[name="password"]', password);
+
+        // Wait a moment for any form submission/page update
+        await page.waitForNetworkIdle({ timeout: 5000 });
+        console.log(`[${new Date().toISOString()}] Password filled successfully`);
+      } catch (passwordError) {
+        console.warn(`[${new Date().toISOString()}] Password field not found or error filling: ${passwordError.message}`);
+        // Continue anyway - page might not have password protection
+      }
+    }
 
     // Generate PDF
     const pdfStart = Date.now();
