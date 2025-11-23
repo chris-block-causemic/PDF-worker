@@ -46,27 +46,49 @@ async function generateReceiptPdf(job, hubspotToken) {
     const page = await browser.newPage();
 
     const navigationStart = Date.now();
-    await page.goto(receiptPageUrl, {
-      waitUntil: 'networkidle0',
-      timeout: 30000
-    });
-    const navigationTime = Date.now() - navigationStart;
 
-    // Fill password if provided
+    // Navigate to page (don't wait yet if password is needed)
     if (password) {
+      // Load page but don't wait for network idle yet
+      await page.goto(receiptPageUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+
       try {
         console.log(`[${new Date().toISOString()}] Password provided, filling password field...`);
+
+        // Wait for password field and fill it
         await page.waitForSelector('input[name="password"]', { timeout: 5000 });
         await page.type('input[name="password"]', password);
 
-        // Wait a moment for any form submission/page update
-        await page.waitForNetworkIdle({ timeout: 5000 });
-        console.log(`[${new Date().toISOString()}] Password filled successfully`);
+        // Find and click submit button
+        const submitButton = await page.$('button[type="submit"]');
+        if (submitButton) {
+          await submitButton.click();
+          console.log(`[${new Date().toISOString()}] Password submitted, waiting for page to load...`);
+
+          // Wait for navigation after password submission
+          await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 });
+        } else {
+          console.warn(`[${new Date().toISOString()}] Submit button not found, trying network idle...`);
+          await page.waitForNetworkIdle({ timeout: 10000 });
+        }
+
+        console.log(`[${new Date().toISOString()}] Password authentication successful`);
       } catch (passwordError) {
-        console.warn(`[${new Date().toISOString()}] Password field not found or error filling: ${passwordError.message}`);
-        // Continue anyway - page might not have password protection
+        console.warn(`[${new Date().toISOString()}] Password authentication failed: ${passwordError.message}`);
+        // Continue anyway - might work without password
       }
+    } else {
+      // No password - normal page load
+      await page.goto(receiptPageUrl, {
+        waitUntil: 'networkidle0',
+        timeout: 30000
+      });
     }
+
+    const navigationTime = Date.now() - navigationStart;
 
     // Generate PDF
     const pdfStart = Date.now();

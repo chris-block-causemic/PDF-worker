@@ -115,27 +115,48 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     const navigationStart = Date.now();
     console.log(`[${new Date().toISOString()}] Loading batch page with ${receiptCount} receipts...`);
 
-    await page.goto(batchPageUrl, {
-      waitUntil: 'networkidle0',
-      timeout: 120000 // 2 minute timeout for large batches
-    });
-    const navigationTime = Date.now() - navigationStart;
-
-    // Fill password if provided
+    // Navigate to page (don't wait yet if password is needed)
     if (password) {
+      // Load page but don't wait for network idle yet
+      await page.goto(batchPageUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 120000
+      });
+
       try {
         console.log(`[${new Date().toISOString()}] Password provided, filling password field...`);
+
+        // Wait for password field and fill it
         await page.waitForSelector('input[name="password"]', { timeout: 5000 });
         await page.type('input[name="password"]', password);
 
-        // Wait a moment for any form submission/page update
-        await page.waitForNetworkIdle({ timeout: 5000 });
-        console.log(`[${new Date().toISOString()}] Password filled successfully`);
+        // Find and click submit button
+        const submitButton = await page.$('button[type="submit"]');
+        if (submitButton) {
+          await submitButton.click();
+          console.log(`[${new Date().toISOString()}] Password submitted, waiting for batch page to load...`);
+
+          // Wait for navigation after password submission (longer timeout for large batches)
+          await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 120000 });
+        } else {
+          console.warn(`[${new Date().toISOString()}] Submit button not found, trying network idle...`);
+          await page.waitForNetworkIdle({ timeout: 10000 });
+        }
+
+        console.log(`[${new Date().toISOString()}] Password authentication successful`);
       } catch (passwordError) {
-        console.warn(`[${new Date().toISOString()}] Password field not found or error filling: ${passwordError.message}`);
-        // Continue anyway - page might not have password protection
+        console.warn(`[${new Date().toISOString()}] Password authentication failed: ${passwordError.message}`);
+        // Continue anyway - might work without password
       }
+    } else {
+      // No password - normal page load
+      await page.goto(batchPageUrl, {
+        waitUntil: 'networkidle0',
+        timeout: 120000 // 2 minute timeout for large batches
+      });
     }
+
+    const navigationTime = Date.now() - navigationStart;
 
     const pdfStart = Date.now();
     console.log(`[${new Date().toISOString()}] Generating batch PDF...`);
