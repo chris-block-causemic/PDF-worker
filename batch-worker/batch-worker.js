@@ -15,6 +15,7 @@ const { Redis } = require('@upstash/redis');
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const FormData = require('form-data');
+const crypto = require('crypto');
 
 const BATCH_QUEUE_KEY = 'batch-pdf-jobs';
 const BATCH_JOB_PREFIX = 'batch-job:';
@@ -30,6 +31,23 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
+
+/**
+ * Generate secure token for batch receipt access
+ * Token = HMAC(batchReceiptId, SECRET_KEY)
+ */
+function generateBatchToken(batchReceiptId) {
+  const secretKey = process.env.RECEIPT_SECRET_KEY;
+  if (!secretKey) {
+    throw new Error('RECEIPT_SECRET_KEY environment variable not set');
+  }
+
+  return crypto
+    .createHmac('sha256', secretKey)
+    .update(batchReceiptId.toString())
+    .digest('hex')
+    .substring(0, 32); // Use first 32 characters for shorter URLs
+}
 
 /**
  * Query HubSpot for all receipts associated with a batch receipt
@@ -84,7 +102,7 @@ async function getAssociatedReceipts(batchReceiptId, hubspotToken) {
  * Generate batch PDF for multiple receipts using persistent browser
  */
 async function generateBatchReceiptPdf(job, hubspotToken) {
-  const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol, password } = job;
+  const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol } = job;
 
   console.log(`[${new Date().toISOString()}] Starting batch PDF generation for batch ${batchReceiptId}`);
 
@@ -103,11 +121,14 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     const receiptCount = receiptIds.length;
     console.log(`[${new Date().toISOString()}] Found ${receiptCount} receipts, generating batch PDF...`);
 
-    // 2. Construct batch receipt page URL with all receipt IDs
-    const receiptIdsParam = encodeURIComponent(JSON.stringify(receiptIds));
-    const batchPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}`;
+    // 2. Generate secure token for batch access
+    const token = generateBatchToken(batchReceiptId);
 
-    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters`);
+    // 3. Construct batch receipt page URL with all receipt IDs and token
+    const receiptIdsParam = encodeURIComponent(JSON.stringify(receiptIds));
+    const batchPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
+
+    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters (with token)`);
 
     // 3. Generate PDF using existing browser
     const page = await browser.newPage();
@@ -115,51 +136,10 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     const navigationStart = Date.now();
     console.log(`[${new Date().toISOString()}] Loading batch page with ${receiptCount} receipts...`);
 
-    // Navigate to page (don't wait yet if password is needed)
-    if (password) {
-      // Load page but don't wait for network idle yet
-      await page.goto(batchPageUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 120000
-      });
-
-      try {
-        console.log(`[${new Date().toISOString()}] Password provided, filling password field...`);
-
-        // Wait for password field and fill it
-        await page.waitForSelector('input[name="password"]', { timeout: 5000 });
-        await page.type('input[name="password"]', password);
-
-        // Find submit button
-        const submitButton = await page.$('button[type="submit"]');
-        if (submitButton) {
-          console.log(`[${new Date().toISOString()}] Submitting password...`);
-
-          // Set up navigation listener BEFORE clicking (navigation might be fast)
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 120000 }),
-            submitButton.click()
-          ]);
-
-          console.log(`[${new Date().toISOString()}] Batch page loaded after password submission`);
-        } else {
-          console.warn(`[${new Date().toISOString()}] Submit button not found, trying network idle...`);
-          await page.waitForNetworkIdle({ timeout: 10000 });
-        }
-
-        console.log(`[${new Date().toISOString()}] Password authentication successful`);
-      } catch (passwordError) {
-        console.warn(`[${new Date().toISOString()}] Password authentication failed: ${passwordError.message}`);
-        // Continue anyway - might work without password
-      }
-    } else {
-      // No password - normal page load
-      await page.goto(batchPageUrl, {
-        waitUntil: 'networkidle0',
-        timeout: 120000 // 2 minute timeout for large batches
-      });
-    }
-
+    await page.goto(batchPageUrl, {
+      waitUntil: 'networkidle0',
+      timeout: 120000 // 2 minute timeout for large batches
+    });
     const navigationTime = Date.now() - navigationStart;
 
     const pdfStart = Date.now();

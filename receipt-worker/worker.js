@@ -14,6 +14,7 @@ const { Redis } = require('@upstash/redis');
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const FormData = require('form-data');
+const crypto = require('crypto');
 
 const QUEUE_KEY = 'pdf-jobs';
 const JOB_PREFIX = 'job:';
@@ -31,13 +32,32 @@ const redis = new Redis({
 });
 
 /**
+ * Generate secure token for receipt access
+ * Token = HMAC(receiptId, SECRET_KEY)
+ */
+function generateReceiptToken(receiptId) {
+  const secretKey = process.env.RECEIPT_SECRET_KEY;
+  if (!secretKey) {
+    throw new Error('RECEIPT_SECRET_KEY environment variable not set');
+  }
+
+  return crypto
+    .createHmac('sha256', secretKey)
+    .update(receiptId.toString())
+    .digest('hex')
+    .substring(0, 32); // Use first 32 characters for shorter URLs
+}
+
+/**
  * Generate PDF for a single receipt using persistent browser
  */
 async function generateReceiptPdf(job, hubspotToken) {
-  const { receiptId, domain, pagePath, folderPath, folderId, protocol, password } = job;
+  const { receiptId, domain, pagePath, folderPath, folderId, protocol } = job;
 
-  const receiptPageUrl = `${protocol}://${domain}${pagePath}?receiptId=${receiptId}`;
-  console.log(`[${new Date().toISOString()}] Generating PDF for: ${receiptPageUrl}`);
+  // Generate secure token for receipt access
+  const token = generateReceiptToken(receiptId);
+  const receiptPageUrl = `${protocol}://${domain}${pagePath}?receiptId=${receiptId}&token=${token}`;
+  console.log(`[${new Date().toISOString()}] Generating PDF for: ${receiptPageUrl} (with token)`);
 
   const startTime = Date.now();
 
@@ -46,52 +66,10 @@ async function generateReceiptPdf(job, hubspotToken) {
     const page = await browser.newPage();
 
     const navigationStart = Date.now();
-
-    // Navigate to page (don't wait yet if password is needed)
-    if (password) {
-      // Load page but don't wait for network idle yet
-      await page.goto(receiptPageUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
-
-      try {
-        console.log(`[${new Date().toISOString()}] Password provided, filling password field...`);
-
-        // Wait for password field and fill it
-        await page.waitForSelector('input[name="password"]', { timeout: 5000 });
-        await page.type('input[name="password"]', password);
-
-        // Find submit button
-        const submitButton = await page.$('button[type="submit"]');
-        if (submitButton) {
-          console.log(`[${new Date().toISOString()}] Submitting password...`);
-
-          // Set up navigation listener BEFORE clicking (navigation might be fast)
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 }),
-            submitButton.click()
-          ]);
-
-          console.log(`[${new Date().toISOString()}] Page loaded after password submission`);
-        } else {
-          console.warn(`[${new Date().toISOString()}] Submit button not found, trying network idle...`);
-          await page.waitForNetworkIdle({ timeout: 10000 });
-        }
-
-        console.log(`[${new Date().toISOString()}] Password authentication successful`);
-      } catch (passwordError) {
-        console.warn(`[${new Date().toISOString()}] Password authentication failed: ${passwordError.message}`);
-        // Continue anyway - might work without password
-      }
-    } else {
-      // No password - normal page load
-      await page.goto(receiptPageUrl, {
-        waitUntil: 'networkidle0',
-        timeout: 30000
-      });
-    }
-
+    await page.goto(receiptPageUrl, {
+      waitUntil: 'networkidle0',
+      timeout: 30000
+    });
     const navigationTime = Date.now() - navigationStart;
 
     // Generate PDF
