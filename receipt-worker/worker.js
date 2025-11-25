@@ -14,7 +14,6 @@ const { Redis } = require('@upstash/redis');
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const FormData = require('form-data');
-const crypto = require('crypto');
 
 const QUEUE_KEY = 'pdf-jobs';
 const JOB_PREFIX = 'job:';
@@ -32,32 +31,14 @@ const redis = new Redis({
 });
 
 /**
- * Generate secure token for receipt access
- * Token = HMAC(receiptId, SECRET_KEY)
- */
-function generateReceiptToken(receiptId) {
-  const secretKey = process.env.RECEIPT_SECRET_KEY;
-  if (!secretKey) {
-    throw new Error('RECEIPT_SECRET_KEY environment variable not set');
-  }
-
-  return crypto
-    .createHmac('sha256', secretKey)
-    .update(receiptId.toString())
-    .digest('hex')
-    .substring(0, 32); // Use first 32 characters for shorter URLs
-}
-
-/**
  * Generate PDF for a single receipt using persistent browser
  */
 async function generateReceiptPdf(job, hubspotToken) {
-  const { receiptId, domain, pagePath, folderPath, folderId, protocol } = job;
+  const { receiptId, domain, pagePath, folderPath, folderId, protocol, token } = job;
 
-  // Generate secure token for receipt access
-  const token = generateReceiptToken(receiptId);
+  // Use token from job data (provided by workflow action)
   const receiptPageUrl = `${protocol}://${domain}${pagePath}?receiptId=${receiptId}&token=${token}`;
-  console.log(`[${new Date().toISOString()}] Generating PDF for: ${receiptPageUrl} (with token)`);
+  console.log(`[${new Date().toISOString()}] Generating PDF for: ${receiptPageUrl}`);
 
   const startTime = Date.now();
 

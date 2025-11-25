@@ -15,7 +15,6 @@ const { Redis } = require('@upstash/redis');
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const FormData = require('form-data');
-const crypto = require('crypto');
 
 const BATCH_QUEUE_KEY = 'batch-pdf-jobs';
 const BATCH_JOB_PREFIX = 'batch-job:';
@@ -31,23 +30,6 @@ const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
-
-/**
- * Generate secure token for batch receipt access
- * Token = HMAC(batchReceiptId, SECRET_KEY)
- */
-function generateBatchToken(batchReceiptId) {
-  const secretKey = process.env.RECEIPT_SECRET_KEY;
-  if (!secretKey) {
-    throw new Error('RECEIPT_SECRET_KEY environment variable not set');
-  }
-
-  return crypto
-    .createHmac('sha256', secretKey)
-    .update(batchReceiptId.toString())
-    .digest('hex')
-    .substring(0, 32); // Use first 32 characters for shorter URLs
-}
 
 /**
  * Query HubSpot for all receipts associated with a batch receipt
@@ -102,7 +84,7 @@ async function getAssociatedReceipts(batchReceiptId, hubspotToken) {
  * Generate batch PDF for multiple receipts using persistent browser
  */
 async function generateBatchReceiptPdf(job, hubspotToken) {
-  const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol } = job;
+  const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol, token } = job;
 
   console.log(`[${new Date().toISOString()}] Starting batch PDF generation for batch ${batchReceiptId}`);
 
@@ -121,14 +103,11 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     const receiptCount = receiptIds.length;
     console.log(`[${new Date().toISOString()}] Found ${receiptCount} receipts, generating batch PDF...`);
 
-    // 2. Generate secure token for batch access
-    const token = generateBatchToken(batchReceiptId);
-
-    // 3. Construct batch receipt page URL with all receipt IDs and token
+    // 2. Construct batch receipt page URL with all receipt IDs and token from job data
     const receiptIdsParam = encodeURIComponent(JSON.stringify(receiptIds));
     const batchPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
 
-    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters (with token)`);
+    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters`);
 
     // 3. Generate PDF using existing browser
     const page = await browser.newPage();
