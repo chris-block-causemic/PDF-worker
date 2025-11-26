@@ -15,12 +15,14 @@ const { Redis } = require('@upstash/redis');
 const puppeteer = require('puppeteer');
 const axios = require('axios');
 const FormData = require('form-data');
+const { PDFDocument } = require('pdf-lib');
 
 const BATCH_QUEUE_KEY = 'batch-pdf-jobs';
 const BATCH_JOB_PREFIX = 'batch-job:';
 const MAX_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 5000; // Poll queue every 5 seconds (less frequent than single receipts)
 const DELAY_BETWEEN_JOBS_MS = 2000; // 2 second delay between batch jobs
+const RECEIPTS_PER_CHUNK = 500; // Safe limit for PDF generation per chunk
 
 let browser = null;
 let isShuttingDown = false;
@@ -81,7 +83,73 @@ async function getAssociatedReceipts(batchReceiptId, hubspotToken) {
 }
 
 /**
+ * Generate a single PDF chunk for a subset of receipts
+ */
+async function generatePdfChunk(receiptIds, domain, pagePath, protocol, token, chunkNumber, totalChunks) {
+  const page = await browser.newPage();
+
+  try {
+    const receiptIdsParam = receiptIds.join(',');
+    const chunkPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
+
+    console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: Loading page with ${receiptIds.length} receipts...`);
+
+    const navigationStart = Date.now();
+    await page.goto(chunkPageUrl, {
+      waitUntil: 'networkidle0',
+      timeout: 120000 // 2 minute timeout
+    });
+    const navigationTime = Date.now() - navigationStart;
+
+    const pdfStart = Date.now();
+    console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: Generating PDF...`);
+
+    page.setDefaultTimeout(180000); // 3 minutes
+
+    const pdfBuffer = await page.pdf({
+      format: 'Letter',
+      printBackground: true,
+      margin: { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' },
+      timeout: 180000 // 3 minute timeout
+    });
+    const pdfTime = Date.now() - pdfStart;
+
+    console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: PDF generated - ${pdfBuffer.length} bytes (nav: ${navigationTime}ms, pdf: ${pdfTime}ms)`);
+
+    return pdfBuffer;
+
+  } finally {
+    await page.close();
+  }
+}
+
+/**
+ * Merge multiple PDF buffers into a single PDF
+ */
+async function mergePdfs(pdfBuffers) {
+  console.log(`[${new Date().toISOString()}] Merging ${pdfBuffers.length} PDF chunks...`);
+  const mergeStart = Date.now();
+
+  const mergedPdf = await PDFDocument.create();
+
+  for (let i = 0; i < pdfBuffers.length; i++) {
+    const pdfDoc = await PDFDocument.load(pdfBuffers[i]);
+    const copiedPages = await mergedPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
+    copiedPages.forEach((page) => mergedPdf.addPage(page));
+    console.log(`[${new Date().toISOString()}] Merged chunk ${i + 1}/${pdfBuffers.length} (${copiedPages.length} pages)`);
+  }
+
+  const mergedPdfBytes = await mergedPdf.save();
+  const mergeTime = Date.now() - mergeStart;
+
+  console.log(`[${new Date().toISOString()}] PDF merge complete: ${mergedPdfBytes.length} bytes (${mergeTime}ms)`);
+
+  return Buffer.from(mergedPdfBytes);
+}
+
+/**
  * Generate batch PDF for multiple receipts using persistent browser
+ * Splits large batches into chunks, generates separate PDFs, and merges them
  */
 async function generateBatchReceiptPdf(job, hubspotToken) {
   const { batchReceiptId, domain, pagePath, folderPath, folderId, protocol, token } = job;
@@ -91,7 +159,7 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
   const startTime = Date.now();
 
   try {
-    // 1. Query HubSpot for count of associated receipts (for logging/metrics only)
+    // 1. Query HubSpot for associated receipts
     const associationStart = Date.now();
     const receiptIds = await getAssociatedReceipts(batchReceiptId, hubspotToken);
     const associationTime = Date.now() - associationStart;
@@ -101,56 +169,72 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     }
 
     const receiptCount = receiptIds.length;
-    console.log(`[${new Date().toISOString()}] Found ${receiptCount} receipts, generating batch PDF...`);
+    console.log(`[${new Date().toISOString()}] Found ${receiptCount} receipts`);
 
-    // 2. Construct batch receipt page URL with comma-separated receipt IDs
-    const receiptIdsParam = receiptIds.join(',');
-    const batchPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
+    // 2. Split receipts into chunks
+    const chunks = [];
+    for (let i = 0; i < receiptIds.length; i += RECEIPTS_PER_CHUNK) {
+      chunks.push(receiptIds.slice(i, i + RECEIPTS_PER_CHUNK));
+    }
 
-    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters`);
-    console.log(`[${new Date().toISOString()}] Token from job: "${token}"`);
+    const totalChunks = chunks.length;
+    console.log(`[${new Date().toISOString()}] Splitting into ${totalChunks} chunks of up to ${RECEIPTS_PER_CHUNK} receipts each`);
 
-    // 3. Generate PDF using existing browser
-    const page = await browser.newPage();
+    // 3. Generate PDF for each chunk
+    const pdfBuffers = [];
+    let totalNavigationTime = 0;
+    let totalPdfTime = 0;
 
-    const navigationStart = Date.now();
-    console.log(`[${new Date().toISOString()}] Loading batch page with ${receiptCount} receipts...`);
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkStart = Date.now();
+      const pdfBuffer = await generatePdfChunk(
+        chunks[i],
+        domain,
+        pagePath,
+        protocol,
+        token,
+        i + 1,
+        totalChunks
+      );
+      pdfBuffers.push(pdfBuffer);
+      const chunkTime = Date.now() - chunkStart;
+      totalPdfTime += chunkTime;
 
-    await page.goto(batchPageUrl, {
-      waitUntil: 'networkidle0',
-      timeout: 120000 // 2 minute timeout for large batches
-    });
-    const navigationTime = Date.now() - navigationStart;
+      // Small delay between chunks to avoid overwhelming the browser
+      if (i < chunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
 
-    const pdfStart = Date.now();
-    console.log(`[${new Date().toISOString()}] Generating batch PDF...`);
+    // 4. Merge PDFs if multiple chunks, otherwise use single PDF
+    let finalPdfBuffer;
+    let mergeTime = 0;
 
-    const pdfBuffer = await page.pdf({
-      format: 'Letter',
-      printBackground: true,
-      margin: { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' }
-    });
-    const pdfTime = Date.now() - pdfStart;
+    if (pdfBuffers.length > 1) {
+      finalPdfBuffer = await mergePdfs(pdfBuffers);
+      mergeTime = Date.now() - startTime - associationTime - totalPdfTime;
+    } else {
+      finalPdfBuffer = pdfBuffers[0];
+      console.log(`[${new Date().toISOString()}] Single chunk, no merging needed`);
+    }
 
-    await page.close();
+    console.log(`[${new Date().toISOString()}] Final batch PDF: ${finalPdfBuffer.length} bytes (${receiptCount} receipts)`);
+    console.log(`[${new Date().toISOString()}] Timings: association: ${associationTime}ms, chunks: ${totalPdfTime}ms, merge: ${mergeTime}ms`);
 
-    console.log(`[${new Date().toISOString()}] Batch PDF generated: ${pdfBuffer.length} bytes (${receiptCount} receipts)`);
-    console.log(`[${new Date().toISOString()}] Timings: association: ${associationTime}ms, nav: ${navigationTime}ms, pdf: ${pdfTime}ms`);
-
-    // 4. Upload to HubSpot
+    // 5. Upload to HubSpot
     const uploadStart = Date.now();
     const fileName = `batch-receipts-${batchReceiptId}-${Date.now()}.pdf`;
     const { Readable } = require('stream');
     const form = new FormData();
 
     const bufferStream = new Readable();
-    bufferStream.push(pdfBuffer);
+    bufferStream.push(finalPdfBuffer);
     bufferStream.push(null);
 
     form.append('file', bufferStream, {
       filename: fileName,
       contentType: 'application/pdf',
-      knownLength: pdfBuffer.length
+      knownLength: finalPdfBuffer.length
     });
 
     form.append('options', JSON.stringify({ access: 'PRIVATE', overwrite: false }));
@@ -222,12 +306,13 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
       success: true,
       pdfUrl: fileData.url,
       pdfId: fileData.id,
-      size: pdfBuffer.length,
+      size: finalPdfBuffer.length,
       receiptCount: receiptCount,
+      chunks: totalChunks,
       timings: {
         association: associationTime,
-        navigation: navigationTime,
-        pdf: pdfTime,
+        chunks: totalPdfTime,
+        merge: mergeTime,
         upload: uploadTime,
         total: totalTime,
         receiptsPerSecond: (receiptCount / (totalTime / 1000)).toFixed(2)
