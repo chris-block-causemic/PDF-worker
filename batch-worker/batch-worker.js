@@ -93,6 +93,8 @@ async function generatePdfChunk(receiptIds, domain, pagePath, protocol, token, c
     const chunkPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
 
     console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: Loading page with ${receiptIds.length} receipts...`);
+    console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: URL length: ${chunkPageUrl.length} characters`);
+    console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: Token: "${token}"`);
 
     const navigationStart = Date.now();
     await page.goto(chunkPageUrl, {
@@ -100,6 +102,10 @@ async function generatePdfChunk(receiptIds, domain, pagePath, protocol, token, c
       timeout: 120000 // 2 minute timeout
     });
     const navigationTime = Date.now() - navigationStart;
+
+    // Check for error messages in page content
+    const pageTitle = await page.title();
+    console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: Page title: "${pageTitle}"`);
 
     const pdfStart = Date.now();
     console.log(`[${new Date().toISOString()}] Chunk ${chunkNumber}/${totalChunks}: Generating PDF...`);
@@ -179,6 +185,7 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
 
     const totalChunks = chunks.length;
     console.log(`[${new Date().toISOString()}] Splitting into ${totalChunks} chunks of up to ${RECEIPTS_PER_CHUNK} receipts each`);
+    console.log(`[${new Date().toISOString()}] Chunk sizes: ${chunks.map(c => c.length).join(', ')}`);
 
     // 3. Generate PDF for each chunk
     const pdfBuffers = [];
