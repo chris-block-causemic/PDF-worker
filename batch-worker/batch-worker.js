@@ -91,7 +91,7 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
   const startTime = Date.now();
 
   try {
-    // 1. Query HubSpot for all associated receipts
+    // 1. Query HubSpot for count of associated receipts (for logging/metrics only)
     const associationStart = Date.now();
     const receiptIds = await getAssociatedReceipts(batchReceiptId, hubspotToken);
     const associationTime = Date.now() - associationStart;
@@ -103,10 +103,11 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     const receiptCount = receiptIds.length;
     console.log(`[${new Date().toISOString()}] Found ${receiptCount} receipts, generating batch PDF...`);
 
-    // 2. Construct batch receipt page URL with batchReceiptId (template will fetch associations)
-    const batchPageUrl = `${protocol}://${domain}${pagePath}?batchReceiptId=${batchReceiptId}&token=${token}`;
+    // 2. Construct batch receipt page URL with comma-separated receipt IDs
+    const receiptIdsParam = receiptIds.join(',');
+    const batchPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
 
-    console.log(`[${new Date().toISOString()}] Batch page URL: ${batchPageUrl}`);
+    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters`);
     console.log(`[${new Date().toISOString()}] Token from job: "${token}"`);
 
     // 3. Generate PDF using existing browser
