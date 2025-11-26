@@ -103,13 +103,11 @@ async function generateBatchReceiptPdf(job, hubspotToken) {
     const receiptCount = receiptIds.length;
     console.log(`[${new Date().toISOString()}] Found ${receiptCount} receipts, generating batch PDF...`);
 
-    // 2. Construct batch receipt page URL with all receipt IDs and token from job data
-    const receiptIdsParam = encodeURIComponent(JSON.stringify(receiptIds));
-    const batchPageUrl = `${protocol}://${domain}${pagePath}?receiptIds=${receiptIdsParam}&token=${token}`;
+    // 2. Construct batch receipt page URL with batchReceiptId (template will fetch associations)
+    const batchPageUrl = `${protocol}://${domain}${pagePath}?batchReceiptId=${batchReceiptId}&token=${token}`;
 
-    console.log(`[${new Date().toISOString()}] Batch page URL length: ${batchPageUrl.length} characters`);
+    console.log(`[${new Date().toISOString()}] Batch page URL: ${batchPageUrl}`);
     console.log(`[${new Date().toISOString()}] Token from job: "${token}"`);
-    console.log(`[${new Date().toISOString()}] Full URL: ${batchPageUrl.substring(0, 200)}...`);
 
     // 3. Generate PDF using existing browser
     const page = await browser.newPage();
